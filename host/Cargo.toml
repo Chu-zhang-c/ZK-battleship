@@ -9,6 +9,7 @@ risc0-zkvm = { version = "^3.0.3" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = "1.0"
 core = { path = "../core", features = ["rand"] }
+eframe = "0.25"
 
 [dev-dependencies]
 rand = "0.8"
