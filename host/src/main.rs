@@ -2,6 +2,8 @@
 // The ELF is used for proving and the ID is used for verification.
 use methods::{METHOD_ELF, METHOD_ID};
 use risc0_zkvm::{default_prover, ExecutorEnv};
+use core::{GameState, ShipType, Direction, Position};
+use crate::proofs::{GuestInput, produce_and_verify_proof, extract_round_commits};
 
 fn main() {
     // Initialize tracing. In order to view logs, run `RUST_LOG=info cargo run`
@@ -41,10 +43,25 @@ fn main() {
     // extract the receipt.
     let receipt = prove_info.receipt;
 
-    // TODO: Implement code for retrieving receipt journal here.
+    // For demonstration we'll run a small RISC0 proof using a sample
+    // `GuestInput` that mirrors the guest's expected input. In a real
+    // game you would build this input from the current player's board
+    // and the requested shots.
+    let mut state = GameState::new([0; 16]);
+    // place a destroyer at (2,2) horizontally for demo
+    let _ = state.place_ship(ShipType::Destroyer, Position::new(2,2), Direction::Horizontal);
 
-    // For example:
-    let _output: u32 = receipt.journal.decode().unwrap();
+    let guest_input = GuestInput { initial: state, shots: vec![Position::new(2,2)] };
+
+    // Produce and verify the proof for this input
+    let receipt = produce_and_verify_proof(&guest_input).unwrap();
+
+    // Extract the sequence of commits (initial + per-round) recorded in the journal
+    let commits = extract_round_commits(&receipt).unwrap();
+    println!("Extracted {} commit(s) from the receipt journal", commits.len());
+    for (i, c) in commits.iter().enumerate() {
+        println!("commit[{}]: old={} new={} shot={:?} hit={:?}", i, hex::encode(c.old_state.as_ref()), hex::encode(c.new_state.as_ref()), c.shot, c.hit);
+    }
 
     // The receipt was verified at the end of proving, but the below code is an
     // example of how someone else could verify this receipt.

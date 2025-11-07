@@ -17,6 +17,7 @@ use std::io::{self, Write};
 use crate::board_init::prompt_place_ships;
 use crate::visualize::{display_board, display_dual};
 use core::{GameState, Position, HitType};
+use crate::proofs::{GuestInput, produce_and_verify_proof, extract_round_commits, verify_remote_round_proof};
 
 /// Run the full interactive game implementing the requested turn rules.
 pub fn run_game_master_interactive() {
@@ -72,44 +73,61 @@ pub fn run_game_master_interactive() {
             };
 
             let pos = Position::new(x, y);
-            match opponent.apply_shot(pos) {
-                None => {
-                    // out of bounds or already-shot -> reprompt
-                    println!("Shot out of bounds or already taken; try again.");
-                    continue;
-                }
-                Some(hit_type) => {
-                    match hit_type {
-                        HitType::Miss => {
-                            println!("Miss.");
-                            // Miss -> turn passes to next player
-                            turn = 1 - turn;
-                            break; // break inner loop to go to next player's outer loop
-                        }
-                        HitType::Hit => {
-                            println!("Hit! You get another shot.");
-                            // After a hit, check if opponent has all ships sunk (rare case)
-                            if opponent.ships.iter().all(|s| s.is_sunk()) {
-                                println!("All opponent ships sunk! {} wins!", active_name);
-                                return;
+            // Instead of applying the shot directly, produce a per-round proof
+            // using the guest and verify the produced RoundCommit matches the
+            // server's authoritative application of the shot.
+            let pre_digest = opponent.commit();
+
+            let guest_input = GuestInput { initial: opponent.clone(), shots: vec![pos] };
+            match produce_and_verify_proof(&guest_input) {
+                Ok(receipt) => {
+                    // Verify and validate the round's commit against authoritative state
+                    match verify_remote_round_proof(&receipt, opponent, pos) {
+                        Ok(commits) => {
+                            // commits last element corresponds to the shot result we just proved
+                            let rc = commits.last().unwrap();
+                            match &rc.hit {
+                                HitType::Miss => {
+                                    println!("Miss (verified).");
+                                    // update opponent state using the commit we verified
+                                    let _ = opponent.apply_shot(pos);
+                                    turn = 1 - turn;
+                                    break;
+                                }
+                                HitType::Hit => {
+                                    println!("Hit (verified)! You get another shot.");
+                                    let _ = opponent.apply_shot(pos);
+                                    if opponent.ships.iter().all(|s| s.is_sunk()) {
+                                        println!("All opponent ships sunk! {} wins!", active_name);
+                                        return;
+                                    }
+                                    display_board(active, true);
+                                    display_board(opponent, false);
+                                    continue;
+                                }
+                                HitType::Sunk(st) => {
+                                    println!("Sunk {:?} (verified). Turn passes.", st);
+                                    let _ = opponent.apply_shot(pos);
+                                    if opponent.ships.iter().all(|s| s.is_sunk()) {
+                                        println!("All opponent ships sunk! {} wins!", active_name);
+                                        return;
+                                    }
+                                    turn = 1 - turn;
+                                    break;
+                                }
                             }
-                            // Hit -> same player continues; show updated boards and reprompt
-                            display_board(active, true);
-                            display_board(opponent, false);
-                            continue; // same player's inner loop
                         }
-                        HitType::Sunk(ship_type) => {
-                            println!("You sunk an opponent's {:?}! Turn passes to next player.", ship_type);
-                            // If all opponent ships are now sunk, current player wins
-                            if opponent.ships.iter().all(|s| s.is_sunk()) {
-                                println!("All opponent ships sunk! {} wins!", active_name);
-                                return;
-                            }
-                            // Sunk -> turn passes
-                            turn = 1 - turn;
-                            break;
+                        Err(e) => {
+                            println!("Proof verification failed: {e}");
+                            println!("Rejecting shot.");
+                            continue;
                         }
                     }
+                }
+                Err(e) => {
+                    println!("Failed to produce/verify proof locally: {e}");
+                    println!("Rejecting shot.");
+                    continue;
                 }
             }
         }
