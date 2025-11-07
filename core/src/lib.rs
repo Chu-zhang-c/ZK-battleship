@@ -21,6 +21,44 @@ pub enum Direction {
     Vertical,
 }
 
+// ============================================================================
+// Position type (safer than raw integers)
+// ============================================================================
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Hash)]
+pub struct Position {
+    pub x: u32,
+    pub y: u32,
+}
+
+impl Position {
+    pub fn new(x: u32, y: u32) -> Self {
+        Self { x, y }
+    }
+
+    pub fn step(self, dir: Direction, dist: u32) -> Self {
+        match dir {
+            Direction::Vertical => Self { x: self.x, y: self.y + dist },
+            Direction::Horizontal => Self { x: self.x + dist, y: self.y },
+        }
+    }
+
+    pub fn in_bounds(&self) -> bool {
+        self.x < BOARD_SIZE as u32 && self.y < BOARD_SIZE as u32
+    }
+}
+
+impl From<(u32, u32)> for Position {
+    fn from(value: (u32, u32)) -> Self {
+        Self::new(value.0, value.1)
+    }
+}
+
+impl From<(u8, u8)> for Position {
+    fn from(value: (u8, u8)) -> Self {
+        Self::new(value.0 as u32, value.1 as u32)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ShipType {
     Carrier,    // size 5
@@ -55,7 +93,7 @@ impl ShipType {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub struct Ship {
     pub ship_type: ShipType,
-    pub position: (u8, u8),  // (x, y) coordinates of the ship's start position
+    pub position: Position,  // (x, y) coordinates of the ship's start position
     pub direction: Direction,
     /// Bitmask of hits; bit 0 = first segment, bit 1 = second, etc.
     /// Only the lowest `size` bits are used. Using a fixed-size u8 avoids
@@ -64,8 +102,8 @@ pub struct Ship {
 }
 
 impl Ship {
-    pub fn new(ship_type: ShipType, position: (u8, u8), direction: Direction) -> Self {
-        Self { ship_type, position, direction, hits: 0 }
+    pub fn new(ship_type: ShipType, position: impl Into<Position>, direction: Direction) -> Self {
+        Self { ship_type, position: position.into(), direction, hits: 0 }
     }
 
     pub fn is_sunk(&self) -> bool {
@@ -75,16 +113,17 @@ impl Ship {
     }
 
     // Check if a given position hits this ship
-    pub fn check_hit(&mut self, x: u8, y: u8) -> bool {
-        let (ship_x, ship_y) = self.position;
+    pub fn check_hit(&mut self, shot: Position) -> bool {
+        let ship_x = self.position.x;
+        let ship_y = self.position.y;
 
         match self.direction {
             Direction::Horizontal => {
                 // Must be on the same row and not before the ship start
-                if y != ship_y || x < ship_x {
+                if shot.y != ship_y || shot.x < ship_x {
                     return false;
                 }
-                let offset = (x - ship_x) as usize;
+                let offset = (shot.x - ship_x) as usize;
                 if offset < self.ship_type.size() as usize {
                     self.hits |= 1u8 << offset;
                     return true;
@@ -92,10 +131,10 @@ impl Ship {
             }
             Direction::Vertical => {
                 // Must be on the same column and not before the ship start
-                if x != ship_x || y < ship_y {
+                if shot.x != ship_x || shot.y < ship_y {
                     return false;
                 }
-                let offset = (y - ship_y) as usize;
+                let offset = (shot.y - ship_y) as usize;
                 if offset < self.ship_type.size() as usize {
                     self.hits |= 1u8 << offset;
                     return true;
@@ -106,22 +145,12 @@ impl Ship {
     }
 
     // Get all coordinates this ship occupies
-    pub fn get_coordinates(&self) -> Vec<(u8, u8)> {
+    pub fn get_coordinates(&self) -> Vec<Position> {
         let size = self.ship_type.size();
-        let (x, y) = self.position;
         let mut coords = Vec::with_capacity(size as usize);
 
-        match self.direction {
-            Direction::Horizontal => {
-                for offset in 0..size {
-                    coords.push((x + offset, y));
-                }
-            }
-            Direction::Vertical => {
-                for offset in 0..size {
-                    coords.push((x, y + offset));
-                }
-            }
+        for offset in 0..size {
+            coords.push(self.position.step(self.direction, offset as u32));
         }
         coords
     }
@@ -146,7 +175,7 @@ pub enum HitType {
 pub struct RoundCommit {
     pub old_state: Digest,
     pub new_state: Digest,
-    pub shot: (u8, u8),
+    pub shot: Position,
     pub hit: HitType,
 }
 
@@ -176,31 +205,18 @@ impl GameState {
     // it consistently between prover and verifier.
 
     // Check if a ship can be placed at specific coordinates
-    pub fn can_place_ship(&self, ship_type: ShipType, pos: (u8, u8), direction: Direction) -> bool {
-        let (start_x, start_y) = pos;
+    pub fn can_place_ship(&self, ship_type: ShipType, pos: impl Into<Position>, direction: Direction) -> bool {
+        let start: Position = pos.into();
         let size = ship_type.size();
 
         // Check start coordinates are within bounds
-        if start_x as usize >= BOARD_SIZE || start_y as usize >= BOARD_SIZE {
+        if !start.in_bounds() {
             return false;
         }
 
         // Calculate and check end coordinates based on direction
-        let (end_x, end_y) = match direction {
-            Direction::Horizontal => {
-                let end_x = start_x as usize + (size - 1) as usize;
-                let end_y = start_y as usize;
-                (end_x, end_y)
-            },
-            Direction::Vertical => {
-                let end_x = start_x as usize;
-                let end_y = start_y as usize + (size - 1) as usize;
-                (end_x, end_y)
-            }
-        };
-
-        // Check end coordinates are within bounds
-        if end_x >= BOARD_SIZE || end_y >= BOARD_SIZE {
+        let end = start.step(direction, (size - 1) as u32);
+        if !end.in_bounds() {
             return false;
         }
 
@@ -210,7 +226,7 @@ impl GameState {
         }
 
         // Create temporary ship to check its coordinates
-        let temp_ship = Ship::new(ship_type, pos, direction);
+        let temp_ship = Ship::new(ship_type, start, direction);
         let new_coords = temp_ship.get_coordinates();
 
         // Check if any of the coordinates overlap with existing ships
@@ -227,7 +243,8 @@ impl GameState {
     }
 
     // Place a ship at specific coordinates
-    pub fn place_ship(&mut self, ship_type: ShipType, pos: (u8, u8), direction: Direction) -> bool {
+    pub fn place_ship(&mut self, ship_type: ShipType, pos: impl Into<Position>, direction: Direction) -> bool {
+        let pos: Position = pos.into();
         if self.can_place_ship(ship_type, pos, direction) {
             self.ships.push(Ship::new(ship_type, pos, direction));
             true
@@ -236,33 +253,24 @@ impl GameState {
         }
     }
 
-    // Place multiple ships at once with specific coordinates
-    pub fn place_ships(&mut self, ships: Vec<(ShipType, (u8, u8), Direction)>) -> bool {
-        // Store current ships in case we need to rollback
-        let original_ships = self.ships.clone();
-        self.ships.clear();
-
+    // Place multiple ships iteratively (non-atomic): attempts each placement
+    // in order and keeps any successfully placed ships. Returns true if all
+    // ships were placed, false if one or more failed.
+    pub fn place_ships(&mut self, ships: Vec<(ShipType, Position, Direction)>) -> bool {
+        let mut all_ok = true;
         for (ship_type, pos, direction) in ships {
-            if !self.place_ship(ship_type, pos, direction) {
-                // If placement fails, restore original ships and return false
-                self.ships = original_ships;
-                return false;
+            let ok = self.place_ship(ship_type, pos, direction);
+            if !ok {
+                all_ok = false;
             }
         }
-
-        if !self.check() {
-            // If final validation fails, restore original ships
-            self.ships = original_ships;
-            return false;
-        }
-
-        true
+        all_ok
     }
 
     #[cfg(feature = "rand")]
     pub fn place_ships_randomly<R: Rng + ?Sized>(&mut self, rng: &mut R) -> bool {
-        let mut positions: Vec<(u8, u8)> = (0..BOARD_SIZE as u8)
-            .flat_map(|x| (0..BOARD_SIZE as u8).map(move |y| (x, y)))
+        let mut positions: Vec<Position> = (0..BOARD_SIZE as u32)
+            .flat_map(|x| (0..BOARD_SIZE as u32).map(move |y| Position::new(x, y)))
             .collect();
         positions.shuffle(rng);
 
@@ -300,10 +308,9 @@ impl GameState {
         // Check all ships are within bounds and don't overlap
         for (i, ship_i) in self.ships.iter().enumerate() {
             let coords_i = ship_i.get_coordinates();
-            
+
             // Check bounds
-            if coords_i.iter().any(|&(x, y)| 
-                x as usize >= BOARD_SIZE || y as usize >= BOARD_SIZE) {
+            if coords_i.iter().any(|pos| !pos.in_bounds()) {
                 return false;
             }
 
@@ -312,7 +319,7 @@ impl GameState {
                 if ship_i.ship_type == ship_j.ship_type {
                     return false;
                 }
-                
+
                 let coords_j = ship_j.get_coordinates();
                 if coords_i.iter().any(|coord| coords_j.contains(coord)) {
                     return false;
@@ -328,19 +335,20 @@ impl GameState {
         found_types.iter().all(|&present| present)
     }
 
-    pub fn apply_shot(&mut self, x: u8, y: u8) -> Option<HitType> {
-        if x as usize >= BOARD_SIZE || y as usize >= BOARD_SIZE {
+    pub fn apply_shot(&mut self, shot: impl Into<Position>) -> Option<HitType> {
+        let shot: Position = shot.into();
+        if !shot.in_bounds() {
             return None;
         }
 
-        let cell = &mut self.grid[y as usize][x as usize];
+        let cell = &mut self.grid[shot.y as usize][shot.x as usize];
         if *cell != CellState::Empty {
-            return None;  // Already shot here
+            return None; // Already shot here
         }
 
         // Check if we hit any ships
         for ship in &mut self.ships {
-            if ship.check_hit(x, y) {
+            if ship.check_hit(shot) {
                 *cell = CellState::Hit;
                 if ship.is_sunk() {
                     return Some(HitType::Sunk(ship.ship_type));
@@ -362,8 +370,8 @@ impl GameState {
 #[cfg(feature = "rand")]
 impl Distribution<GameState> for Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> GameState {
-        let mut positions: Vec<(u8, u8)> = (0..BOARD_SIZE as u8)
-            .flat_map(|x| (0..BOARD_SIZE as u8).map(move |y| (x, y)))
+        let mut positions: Vec<Position> = (0..BOARD_SIZE as u32)
+            .flat_map(|x| (0..BOARD_SIZE as u32).map(move |y| Position::new(x, y)))
             .collect();
         positions.shuffle(rng);
 
@@ -409,11 +417,11 @@ mod tests {
     fn test_basic_board() {
         let state = GameState {
             ships: vec![
-                Ship::new(ShipType::Carrier, (2, 3), Direction::Vertical),
-                Ship::new(ShipType::Battleship, (3, 1), Direction::Horizontal),
-                Ship::new(ShipType::Cruiser, (4, 7), Direction::Vertical),
-                Ship::new(ShipType::Submarine, (7, 5), Direction::Horizontal),
-                Ship::new(ShipType::Destroyer, (7, 7), Direction::Horizontal),
+                Ship::new(ShipType::Carrier, Position::new(2, 3), Direction::Vertical),
+                Ship::new(ShipType::Battleship, Position::new(3, 1), Direction::Horizontal),
+                Ship::new(ShipType::Cruiser, Position::new(4, 7), Direction::Vertical),
+                Ship::new(ShipType::Submarine, Position::new(7, 5), Direction::Horizontal),
+                Ship::new(ShipType::Destroyer, Position::new(7, 7), Direction::Horizontal),
             ],
             pepper: [0; 16],
             grid: [[CellState::Empty; BOARD_SIZE]; BOARD_SIZE],
@@ -433,13 +441,13 @@ mod tests {
     #[test]
     fn test_shot_before_start_not_hit() {
         let mut state = GameState {
-            ships: vec![Ship::new(ShipType::Cruiser, (5, 5), Direction::Horizontal)],
+            ships: vec![Ship::new(ShipType::Cruiser, Position::new(5, 5), Direction::Horizontal)],
             pepper: [0; 16],
             grid: [[CellState::Empty; BOARD_SIZE]; BOARD_SIZE],
         };
 
-        // Shot before the ship's start should be a miss
-        let res = state.apply_shot(4, 5);
+    // Shot before the ship's start should be a miss
+    let res = state.apply_shot(Position::new(4, 5));
         assert_eq!(res, Some(HitType::Miss));
         // Ship's hit mask should remain zero
         assert_eq!(state.ships[0].hits, 0u8);
@@ -448,20 +456,20 @@ mod tests {
 
     #[test]
     fn test_boundary_placement() {
-        let mut state = GameState::new([0; 16]);
-        // Carrier size 5 placed at x=5 horizontally should end at x=9 (valid)
-        assert!(state.can_place_ship(ShipType::Carrier, (5, 9), Direction::Horizontal));
-        // Carrier at x=6 would end at x=10 which is out of bounds
-        assert!(!state.can_place_ship(ShipType::Carrier, (6, 9), Direction::Horizontal));
+        let state = GameState::new([0; 16]);
+    // Carrier size 5 placed at x=5 horizontally should end at x=9 (valid)
+    assert!(state.can_place_ship(ShipType::Carrier, Position::new(5, 9), Direction::Horizontal));
+    // Carrier at x=6 would end at x=10 which is out of bounds
+    assert!(!state.can_place_ship(ShipType::Carrier, Position::new(6, 9), Direction::Horizontal));
     }
 
     #[test]
     fn test_overlap_detection() {
         let mut state = GameState::new([0; 16]);
-        assert!(state.place_ship(ShipType::Carrier, (0, 0), Direction::Horizontal));
-        // Battleship overlapping carrier should fail placement
-        assert!(!state.place_ship(ShipType::Battleship, (0, 0), Direction::Vertical));
-        // Non-overlapping placement should succeed
-        assert!(state.place_ship(ShipType::Battleship, (0, 1), Direction::Vertical));
+    assert!(state.place_ship(ShipType::Carrier, Position::new(0, 0), Direction::Horizontal));
+    // Battleship overlapping carrier should fail placement
+    assert!(!state.place_ship(ShipType::Battleship, Position::new(0, 0), Direction::Vertical));
+    // Non-overlapping placement should succeed
+    assert!(state.place_ship(ShipType::Battleship, Position::new(0, 1), Direction::Vertical));
     }
 }
