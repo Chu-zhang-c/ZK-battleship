@@ -4,7 +4,7 @@ use serde::{Deserialize};
 // Import canonical types from the core crate. `GameState::commit()` and
 // `RoundCommit` are used to produce the public commitments that the
 // verifier will later check.
-use core::{GameState, RoundCommit, HitType, Position};
+use core::{GameState, RoundCommit, Position};
 
 /// Input supplied to the guest prover.
 /// - `initial`: the initial board placement (authoritative GameState)

@@ -420,27 +420,32 @@ impl Distribution<GameState> for Standard {
 
         let mut state = GameState::new(rng.gen());
         
-        'outer: for ship_type in [
+        // Place each ship type using the existing validation helpers so we
+        // ensure bounds and overlap rules are respected. Try positions in
+        // shuffled order and both orientations; panic if we cannot place a
+        // required ship.
+        for ship_type in [
             ShipType::Carrier,
             ShipType::Battleship,
             ShipType::Cruiser,
             ShipType::Submarine,
             ShipType::Destroyer,
         ] {
+            let mut placed = false;
             for &pos in &positions {
                 for dir in [Direction::Horizontal, Direction::Vertical] {
-                    let ship = Ship::new(ship_type, pos, dir);
-                    if state.ships.len() < NUM_SHIPS && !state.ships.iter().any(|existing| {
-                        existing.ship_type == ship.ship_type || 
-                        ship.get_coordinates().iter().any(|coord| 
-                            existing.get_coordinates().contains(coord))
-                    }) {
-                        state.ships.push(ship);
-                        continue 'outer;
+                    if state.place_ship(ship_type, pos, dir) {
+                        placed = true;
+                        break;
                     }
                 }
+                if placed {
+                    break;
+                }
             }
-            panic!("Failed to place {:?}", ship_type);
+            if !placed {
+                panic!("Failed to place {:?}", ship_type);
+            }
         }
 
         assert!(state.check());
