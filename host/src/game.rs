@@ -5,7 +5,7 @@ use anyhow::Result;
 use std::io::{self, Write};
 use crate::board_init::prompt_place_ships;
 use crate::visualize::{display_board, display_dual};
-use core::{GameState, Position, HitType};
+use core::{GameState, Position, HitType, CellState};
 use risc0_zkvm::sha::Digest;
 use crate::network::NetworkConnection;
 use crate::network_protocol::GameMessage;
@@ -37,7 +37,7 @@ pub fn run_game_master_interactive() {
         display_board(opponent, false);
 
         // Player may take one or more shots depending on Hit vs Miss vs Sunk rules.
-        loop {
+            loop {
             print!("{active_name}, enter shot as 'x y' (or 'show' to display both boards): ");
             io::stdout().flush().ok();
             let mut input = String::new();
@@ -65,6 +65,17 @@ pub fn run_game_master_interactive() {
             };
 
             let pos = Position::new(x, y);
+                // Prevent shooting the same cell twice
+                if !pos.in_bounds() {
+                    println!("Position out of bounds");
+                    continue;
+                }
+                let ox = pos.x as usize;
+                let oy = pos.y as usize;
+                if opponent.grid[oy][ox] != CellState::Empty {
+                    println!("You've already shot at {},{}. Choose a different target.", ox, oy);
+                    continue;
+                }
             // Instead of applying the shot directly, produce a per-round proof
             // using the guest and verify the produced RoundCommit matches the
             // server's authoritative application of the shot.
@@ -235,6 +246,18 @@ impl GameCoordinator {
                 let y: u32 = parts[1].parse().unwrap_or(999);
                 let pos = Position::new(x,y);
 
+                // Prevent shooting same place twice (use opponent_view which tracks our shots on opponent)
+                if !pos.in_bounds() {
+                    println!("Position out of bounds");
+                    continue;
+                }
+                let ox = pos.x as usize;
+                let oy = pos.y as usize;
+                if self.opponent_view.grid[oy][ox] != CellState::Empty {
+                    println!("You already fired at {},{}; pick another target.", ox, oy);
+                    continue;
+                }
+
                 // Run local prover to create a Round proof for shooting opponent
                 // We pass the opponent's authoritative state as the initial state
                 match &self.local_state { // In peer-to-peer, each host keeps their own board; here we assume opponent state is unknown and use stored opponent_commit only
@@ -299,6 +322,20 @@ impl GameCoordinator {
                     GameMessage::TakeShot { position } => {
                         // Opponent is requesting to take a shot; as the defender we must produce a proof and respond with ShotResult
                         // Build GuestInput using our local_state and the requested shot
+                        // Reject duplicate shots: if this position was already shot on our board, return an Error
+                        if !position.in_bounds() {
+                            let err = GameMessage::Error { message: format!("requested position out of bounds: {:?}", position) };
+                            self.network.send_enveloped(&err)?;
+                            continue;
+                        }
+                        let px = position.x as usize;
+                        let py = position.y as usize;
+                        if self.local_state.grid[py][px] != CellState::Empty {
+                            let err = GameMessage::Error { message: format!("position already shot: {:?}", position) };
+                            self.network.send_enveloped(&err)?;
+                            continue;
+                        }
+
                         let input = crate::proofs::GuestInput { initial: self.local_state.clone(), shots: vec![position] };
                         // Try to produce the per-shot proof locally. If the prover is
                         // not available the function will return an error; in that
@@ -321,6 +358,19 @@ impl GameCoordinator {
                         let rc = commits.last().unwrap().clone();
                         // Apply shot locally
                         let _apply_res = self.local_state.apply_shot(position);
+                        // If all our ships are sunk after this shot, notify opponent and end game
+                        if self.local_state.ships.iter().all(|s| s.is_sunk()) {
+                            let winner = self.opponent_name.clone().unwrap_or_else(|| "Opponent".to_string());
+                            // Build ProofData and send ShotResult
+                            let pd = proofdata_from_receipt(&receipt, rc.clone())?;
+                            let msg = GameMessage::ShotResult { position, hit_type: rc.hit.clone(), proof: pd };
+                            self.network.send_enveloped(&msg)?;
+                            // Send GameOver announcing opponent as winner
+                            let over = GameMessage::GameOver { winner: winner.clone() };
+                            self.network.send_enveloped(&over)?;
+                            println!("All our ships sunk. {} wins!", winner);
+                            return Ok(());
+                        }
                         // Build ProofData and send ShotResult
                         let pd = proofdata_from_receipt(&receipt, rc.clone())?;
                         let msg = GameMessage::ShotResult { position, hit_type: rc.hit.clone(), proof: pd };
