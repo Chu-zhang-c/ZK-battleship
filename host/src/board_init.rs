@@ -13,7 +13,7 @@ use std::io::{self, Write};
 
 // Use the canonical `core` crate types so host code and guest code share the
 // same definitions and behavior.
-use core::{GameState, ShipType, Direction, Position};
+use core::{GameState, ShipType, Direction, Position, BOARD_SIZE};
 
 /// Prompt the user to place ships and return a filled `GameState`.
 ///
@@ -23,8 +23,8 @@ use core::{GameState, ShipType, Direction, Position};
 /// shots are applied.
 pub fn prompt_place_ships(player_name: &str) -> GameState {
     let mut state = GameState::new([0u8; 16]);
-    println!("{}: place your ships on a {}x{} board.", player_name, super::BOARD_SIZE, super::BOARD_SIZE);
-    println!("Coordinates are 0-based: x in [0..{}], y in [0..{}].", super::BOARD_SIZE-1, super::BOARD_SIZE-1);
+    println!("{}: place your ships on a {}x{} board.", player_name, BOARD_SIZE, BOARD_SIZE);
+    println!("Coordinates are 0-based: x in [0..{}], y in [0..{}].", BOARD_SIZE-1, BOARD_SIZE-1);
 
     for &st in [ShipType::Carrier, ShipType::Battleship, ShipType::Cruiser, ShipType::Submarine, ShipType::Destroyer].iter() {
         loop {
