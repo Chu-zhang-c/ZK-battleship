@@ -397,88 +397,9 @@ impl Distribution<GameState> for Standard {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Board {
-    pub grid: [[CellState; BOARD_SIZE]; BOARD_SIZE],
-    pub ships: Vec<Ship>,
-}
-
-impl Board {
-    pub fn new() -> Self {
-        Self {
-            grid: [[CellState::Empty; BOARD_SIZE]; BOARD_SIZE],
-            ships: Vec::with_capacity(NUM_SHIPS),
-        }
-    }
-
-    // Validate if a ship can be placed at the given position
-    pub fn can_place_ship(&self, ship_type: ShipType, pos: (u8, u8), direction: Direction) -> bool {
-        let (x, y) = pos;
-        let size = ship_type.size();
-
-        // Check if ship would extend beyond board
-        match direction {
-            Direction::Horizontal => {
-                if x as usize + size as usize > BOARD_SIZE {
-                    return false;
-                }
-            }
-            Direction::Vertical => {
-                if y as usize + size as usize > BOARD_SIZE {
-                    return false;
-                }
-            }
-        }
-
-        // Create temporary ship to check its coordinates
-        let temp_ship = Ship::new(ship_type, pos, direction);
-        let new_coords = temp_ship.get_coordinates();
-
-        // Check if any of the coordinates overlap with existing ships
-        for existing_ship in &self.ships {
-            let existing_coords = existing_ship.get_coordinates();
-            for coord in &new_coords {
-                if existing_coords.contains(coord) {
-                    return false;
-                }
-            }
-        }
-
-        true
-    }
-
-    pub fn place_ship(&mut self, ship_type: ShipType, pos: (u8, u8), direction: Direction) -> bool {
-        if self.can_place_ship(ship_type, pos, direction) {
-            self.ships.push(Ship::new(ship_type, pos, direction));
-            true
-        } else {
-            false
-        }
-    }
-
-    // Process a shot at the given coordinates
-    pub fn shoot(&mut self, x: u8, y: u8) -> Option<CellState> {
-        if x as usize >= BOARD_SIZE || y as usize >= BOARD_SIZE {
-            return None;
-        }
-
-        let cell = &mut self.grid[y as usize][x as usize];
-        if *cell != CellState::Empty {
-            return None;  // Already shot here
-        }
-
-        // Check if we hit any ships
-        for ship in &mut self.ships {
-            if ship.check_hit(x, y) {
-                *cell = CellState::Hit;
-                return Some(CellState::Hit);
-            }
-        }
-
-        *cell = CellState::Miss;
-        Some(CellState::Miss)
-    }
-}
+// `Board` removed. `GameState` is the canonical authoritative structure for
+// placement, hits, and commitments (ZK). All logic should use `GameState`
+// to avoid duplicated and potentially divergent rules.
 
 #[cfg(test)]
 mod tests {
