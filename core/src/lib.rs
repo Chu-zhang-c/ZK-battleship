@@ -1,3 +1,11 @@
+// core: Battleship game logic designed to be deterministic and ZK-friendly.
+//
+// This module implements a compact Battleship game state and operations
+// that are stable for serialization and commitments. Keep `GameState` as
+// the canonical authority for placement and shots. The implementation
+// favors fixed-size representations (u8 bitmasks, u32 positions) to
+// reduce nondeterminism inside ZK guests.
+
 use serde::{Deserialize, Serialize};
 use risc0_zkvm::sha::Digest;
 use risc0_zkvm::sha::Sha256;
@@ -8,11 +16,15 @@ use {
     rand::seq::SliceRandom,
 };
 
-// Constants for the game
+/// Board dimensions. Fixed-size board simplifies reasoning and
+/// serialization across prover/verifier.
 pub const BOARD_SIZE: usize = 10;
+
+/// Number of distinct ship types used in the canonical setup.
 pub const NUM_SHIPS: usize = 5;
 
-// Ship sizes (Carrier: 5, Battleship: 4, Cruiser: 3, Submarine: 3, Destroyer: 2)
+/// Canonical ship sizes (in reading order): Carrier, Battleship,
+/// Cruiser, Submarine, Destroyer.
 pub const SHIP_SIZES: [u8; NUM_SHIPS] = [5, 4, 3, 3, 2];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -21,8 +33,15 @@ pub enum Direction {
     Vertical,
 }
 
+// Direction is intentionally a small enum so it serializes compactly and
+// can be used in Position/ship arithmetic without allocations.
+
 // ============================================================================
-// Position type (safer than raw integers)
+// Position: a safe, fixed-size coordinate type
+//
+// Use u32 for x/y to avoid accidental underflow/overflow during arithmetic
+// while keeping serialization deterministic. All board-bounds checks use
+// `in_bounds()` and are enforced by placement/shot logic.
 // ============================================================================
 #[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Hash)]
 pub struct Position {
@@ -112,7 +131,14 @@ impl Ship {
         (self.hits & mask) == mask
     }
 
-    // Check if a given position hits this ship
+    /// Check whether the provided absolute board `shot` hits this ship.
+    ///
+    /// If the shot hits a segment within the ship, set the corresponding
+    /// bit in `self.hits` and return `true`. Otherwise return `false`.
+    ///
+    /// Important: this function performs local ship arithmetic and does
+    /// not consult the board grid. Callers should ensure coordinate
+    /// bounds as needed.
     pub fn check_hit(&mut self, shot: Position) -> bool {
         let ship_x = self.position.x;
         let ship_y = self.position.y;
@@ -195,16 +221,18 @@ impl GameState {
         }
     }
 
-    // Note on `pepper`: this is included inside the `GameState` to allow
-    // commitments to be randomized/blinded if desired. Decide the threat
-    // model for your protocol:
-    // - If `pepper` must be secret (keeps board randomness hidden), do NOT
-    //   publish it alongside `RoundCommit` or prover outputs.
-    // - If `pepper` is public, it offers replay-robustness but no secrecy.
-    // Currently `pepper` is part of the committed state. Ensure you handle
-    // it consistently between prover and verifier.
+    // Note on `pepper` (ZK consideration):
+    // - `pepper` is included inside the serialized `GameState` used for
+    //   commitments. If the pepper must remain secret, the prover must
+    //   not reveal it in outputs; if the pepper is public, it may be
+    //   published alongside commitments. Keep prover and verifier logic
+    //   consistent about pepper handling.
 
-    // Check if a ship can be placed at specific coordinates
+    /// Check whether a ship of `ship_type` can be placed at `pos` facing
+    /// `direction`. Checks include:
+    ///  - start and end within board bounds
+    ///  - that a ship of the same type isn't already placed
+    ///  - no coordinate overlap with existing ships
     pub fn can_place_ship(&self, ship_type: ShipType, pos: impl Into<Position>, direction: Direction) -> bool {
         let start: Position = pos.into();
         let size = ship_type.size();
@@ -242,7 +270,8 @@ impl GameState {
         true
     }
 
-    // Place a ship at specific coordinates
+    /// Attempt to place a ship; returns true on success. Delegates to
+    /// `can_place_ship` for validation and mutates `self.ships` on success.
     pub fn place_ship(&mut self, ship_type: ShipType, pos: impl Into<Position>, direction: Direction) -> bool {
         let pos: Position = pos.into();
         if self.can_place_ship(ship_type, pos, direction) {
@@ -253,9 +282,9 @@ impl GameState {
         }
     }
 
-    // Place multiple ships iteratively (non-atomic): attempts each placement
-    // in order and keeps any successfully placed ships. Returns true if all
-    // ships were placed, false if one or more failed.
+    /// Place multiple ships in order. This is intentionally non-atomic;
+    /// previously successful placements are retained even if later
+    /// placements fail. Returns true only if all placements succeed.
     pub fn place_ships(&mut self, ships: Vec<(ShipType, Position, Direction)>) -> bool {
         let mut all_ok = true;
         for (ship_type, pos, direction) in ships {
@@ -268,6 +297,9 @@ impl GameState {
     }
 
     #[cfg(feature = "rand")]
+    #[cfg(feature = "rand")]
+    /// Try to place all ships randomly using the provided RNG. On failure
+    /// clears `self.ships` and returns false.
     pub fn place_ships_randomly<R: Rng + ?Sized>(&mut self, rng: &mut R) -> bool {
         let mut positions: Vec<Position> = (0..BOARD_SIZE as u32)
             .flat_map(|x| (0..BOARD_SIZE as u32).map(move |y| Position::new(x, y)))
@@ -304,6 +336,10 @@ impl GameState {
         true
     }
 
+    /// Run a full consistency check on the game state:
+    /// - all ships within bounds
+    /// - no overlaps
+    /// - exactly one of each ship type present
     pub fn check(&self) -> bool {
         // Check all ships are within bounds and don't overlap
         for (i, ship_i) in self.ships.iter().enumerate() {
@@ -335,6 +371,13 @@ impl GameState {
         found_types.iter().all(|&present| present)
     }
 
+    /// Apply a shot at `shot` and update `self.grid` and any hit ship.
+    ///
+    /// Returns:
+    /// - `Some(HitType::Hit)` if a ship segment was hit (but not sunk)
+    /// - `Some(HitType::Sunk(ship_type))` if the shot sank a ship
+    /// - `Some(HitType::Miss)` if in-bounds and no ship was hit
+    /// - `None` for out-of-bounds shots or if the cell was already shot
     pub fn apply_shot(&mut self, shot: impl Into<Position>) -> Option<HitType> {
         let shot: Position = shot.into();
         if !shot.in_bounds() {
@@ -471,5 +514,62 @@ mod tests {
     assert!(!state.place_ship(ShipType::Battleship, Position::new(0, 0), Direction::Vertical));
     // Non-overlapping placement should succeed
     assert!(state.place_ship(ShipType::Battleship, Position::new(0, 1), Direction::Vertical));
+    }
+
+    // -------------------- additional end-to-end tests --------------------
+
+    #[test]
+    fn test_sink_ship() {
+        // Place a carrier horizontally at (0,0)
+        let mut state = GameState::new([0; 16]);
+        assert!(state.place_ship(ShipType::Carrier, Position::new(0, 0), Direction::Horizontal));
+
+        // Fire at each segment; the final shot should report Sunk
+        for i in 0..5 {
+            let pos = Position::new(i, 0);
+            let res = state.apply_shot(pos);
+            if i < 4 {
+                assert_eq!(res, Some(HitType::Hit));
+            } else {
+                // last segment -> sunk
+                assert_eq!(res, Some(HitType::Sunk(ShipType::Carrier)));
+            }
+        }
+
+        // Verify ship recorded as sunk
+        let ship = state.ships.iter().find(|s| s.ship_type == ShipType::Carrier).unwrap();
+        assert!(ship.is_sunk());
+    }
+
+    #[test]
+    fn test_repeated_shot_idempotent() {
+        let mut state = GameState::new([0; 16]);
+
+        // No ships: first shot is a miss, second identical shot should return None
+        let res1 = state.apply_shot(Position::new(1, 1));
+        assert_eq!(res1, Some(HitType::Miss));
+
+        // Second shot at same cell -> already shot -> None per API
+        let res2 = state.apply_shot(Position::new(1, 1));
+        assert_eq!(res2, None);
+    }
+
+    #[test]
+    fn test_commit_equality() {
+        // Two identical states should produce identical commits; modifying one
+        // should change the commit.
+        let mut s1 = GameState::new([0; 16]);
+        s1.place_ship(ShipType::Destroyer, Position::new(2, 2), Direction::Horizontal);
+
+        let mut s2 = s1.clone();
+
+        let c1 = s1.commit();
+        let c2 = s2.commit();
+        assert_eq!(c1, c2);
+
+        // Mutate s2 (change pepper) and ensure commit changes.
+        s2.pepper[0] = 1;
+        let c3 = s2.commit();
+        assert_ne!(c1, c3);
     }
 }
