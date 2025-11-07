@@ -1,13 +1,58 @@
 use risc0_zkvm::guest::env;
+use serde::{Deserialize};
+
+// Import canonical types from the core crate. `GameState::commit()` and
+// `RoundCommit` are used to produce the public commitments that the
+// verifier will later check.
+use core::{GameState, RoundCommit, HitType, Position};
+
+/// Input supplied to the guest prover.
+/// - `initial`: the initial board placement (authoritative GameState)
+/// - `shots`: a list of shots (in order) for which the guest will emit
+///   per-round commits.
+#[derive(Deserialize)]
+struct GuestInput {
+    initial: GameState,
+    shots: Vec<Position>,
+}
 
 fn main() {
-    // TODO: Implement your guest code here
+    // Read the public input (or witness depending on your protocol).
+    // The `env::read()` will deserialize from the host-supplied input.
+    let input: GuestInput = env::read();
 
-    // read the input
-    let input: u32 = env::read();
+    // Start from the provided initial board state. For ZK protocols the
+    // prover should ensure the initial state satisfies invariants (e.g.,
+    // `check()`), otherwise the proof should fail.
+    let mut state: GameState = input.initial;
+    if !state.check() {
+        // Invalid initial board -> abort proof generation.
+        panic!("initial GameState failed validation");
+    }
 
-    // TODO: do something with the input
+    // Commit the initial board state and publish it to the journal so the
+    // verifier can observe the initial commit value.
+    let initial_commit = state.commit();
+    env::commit(&initial_commit);
 
-    // write public output to the journal
-    env::commit(&input);
+    // For each shot, record the old/new state commits and the hit result
+    // in a `RoundCommit` which is written to the journal.
+    for shot in input.shots {
+        let old_state = state.commit();
+
+        // Apply the shot. Per the core API, `apply_shot` returns `None`
+        // for out-of-bounds or already-shot cells. Here we treat such
+        // cases as a proof failure (panic), because the host should not
+        // request invalid actions; adjust this policy as needed for your
+        // protocol (e.g., you could instead emit a special RoundCommit).
+        let hit = match state.apply_shot(shot) {
+            Some(h) => h,
+            None => panic!("invalid shot requested in guest: {:?}", shot),
+        };
+
+        let new_state = state.commit();
+
+        let round = RoundCommit { old_state, new_state, shot, hit };
+        env::commit(&round);
+    }
 }
