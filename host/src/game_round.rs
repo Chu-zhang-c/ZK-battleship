@@ -8,8 +8,9 @@
 // The module keeps the interaction simple and synchronous using stdin/stdout.
 
 use std::io::{self, Write};
-use crate::board_init::{prompt_place_ships, PlayerBoard, Position};
+use crate::board_init::prompt_place_ships;
 use crate::visualize::{display_board, display_dual};
+use core::{GameState, Position};
 
 /// Run a fully interactive two-player session. This function blocks on
 /// stdin and prints progress to stdout.
@@ -17,10 +18,10 @@ pub fn run_interactive() {
     println!("Welcome to Battleship (interactive host-mode)");
 
     println!("Player 1, place your ships:");
-    let mut p1 = prompt_place_ships("Player 1");
+    let mut p1: GameState = prompt_place_ships("Player 1");
 
     println!("Player 2, place your ships:");
-    let mut p2 = prompt_place_ships("Player 2");
+    let mut p2: GameState = prompt_place_ships("Player 2");
 
     // Optionally show both boards to each player here. For simple
     // play-through, we show the current player's own board and the
@@ -57,7 +58,7 @@ pub fn run_interactive() {
 /// Handle a single player's turn: prompt for shot coordinates, apply shot
 /// to opponent board, print the outcome, and return `true` if opponent is
 /// fully sunk (game over).
-fn handle_player_turn(active: &mut PlayerBoard, opponent: &mut PlayerBoard, player_name: &str) -> bool {
+fn handle_player_turn(active: &mut GameState, opponent: &mut GameState, player_name: &str) -> bool {
     loop {
         print!("{player_name}, enter shot as: x y (or 'show' to display boards): ");
         io::stdout().flush().ok();
@@ -84,19 +85,14 @@ fn handle_player_turn(active: &mut PlayerBoard, opponent: &mut PlayerBoard, play
             Ok(v) => v,
             Err(_) => { println!("Invalid y"); continue; }
         };
-        let pos = Position { x, y };
+        let pos = Position::new(x as u32, y as u32);
         match opponent.apply_shot(pos) {
             None => { println!("Shot out of bounds or already taken; try again."); continue; }
-            Some((hit, ship_opt)) => {
-                if hit {
-                    println!("Hit!");
-                    if let Some(st) = ship_opt {
-                        // if the ship was sunk, it will be reflected in the player's ship state
-                        // but we don't track sunk vs hit here precisely; the board's hit markers are shown.
-                        println!("Ship affected: {:?}", st);
-                    }
-                } else {
-                    println!("Miss.");
+            Some(hit_type) => {
+                match hit_type {
+                    core::HitType::Miss => println!("Miss."),
+                    core::HitType::Hit => println!("Hit!"),
+                    core::HitType::Sunk(st) => println!("Sunk a {:?}!", st),
                 }
                 break;
             }
@@ -104,7 +100,7 @@ fn handle_player_turn(active: &mut PlayerBoard, opponent: &mut PlayerBoard, play
     }
 
     // After applying shot, check for game over
-    if opponent.all_sunk() {
+    if opponent.check() && opponent.ships.iter().all(|s| s.is_sunk()) {
         return true;
     }
     false
@@ -114,20 +110,20 @@ fn handle_player_turn(active: &mut PlayerBoard, opponent: &mut PlayerBoard, play
 /// Places each player's ships in predefined locations (useful for
 /// automated testing or demoing visualization).
 pub fn run_demo() {
-    use crate::board_init::{PlayerBoard, ShipType, Direction, Position};
-    let mut p1 = PlayerBoard::new_empty();
-    p1.place_ship(ShipType::Carrier, Position { x:0,y:0 }, Direction::Horizontal);
-    p1.place_ship(ShipType::Battleship, Position { x:0,y:2 }, Direction::Horizontal);
-    p1.place_ship(ShipType::Cruiser, Position { x:0,y:4 }, Direction::Horizontal);
-    p1.place_ship(ShipType::Submarine, Position { x:0,y:6 }, Direction::Horizontal);
-    p1.place_ship(ShipType::Destroyer, Position { x:0,y:8 }, Direction::Horizontal);
+    use core::{GameState, ShipType, Direction, Position};
+    let mut p1 = GameState::new([0; 16]);
+    p1.place_ship(ShipType::Carrier, Position::new(0,0), Direction::Horizontal);
+    p1.place_ship(ShipType::Battleship, Position::new(0,2), Direction::Horizontal);
+    p1.place_ship(ShipType::Cruiser, Position::new(0,4), Direction::Horizontal);
+    p1.place_ship(ShipType::Submarine, Position::new(0,6), Direction::Horizontal);
+    p1.place_ship(ShipType::Destroyer, Position::new(0,8), Direction::Horizontal);
 
-    let mut p2 = PlayerBoard::new_empty();
-    p2.place_ship(ShipType::Carrier, Position { x:0,y:0 }, Direction::Vertical);
-    p2.place_ship(ShipType::Battleship, Position { x:2,y:0 }, Direction::Vertical);
-    p2.place_ship(ShipType::Cruiser, Position { x:4,y:0 }, Direction::Vertical);
-    p2.place_ship(ShipType::Submarine, Position { x:6,y:0 }, Direction::Vertical);
-    p2.place_ship(ShipType::Destroyer, Position { x:8,y:0 }, Direction::Vertical);
+    let mut p2 = GameState::new([0; 16]);
+    p2.place_ship(ShipType::Carrier, Position::new(0,0), Direction::Vertical);
+    p2.place_ship(ShipType::Battleship, Position::new(2,0), Direction::Vertical);
+    p2.place_ship(ShipType::Cruiser, Position::new(4,0), Direction::Vertical);
+    p2.place_ship(ShipType::Submarine, Position::new(6,0), Direction::Vertical);
+    p2.place_ship(ShipType::Destroyer, Position::new(8,0), Direction::Vertical);
 
     println!("Demo: Player boards (left: P1 revealed, right: P2 hidden)");
     display_dual(&p1, &p2, true);
