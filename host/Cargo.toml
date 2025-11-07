@@ -17,6 +17,7 @@ anyhow = "1.0"
 hex = "0.4"
 # Enable serde support for Uuid so Envelope can be serialized
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
+eframe = "0.25"
 
 [dev-dependencies]
 rand = "0.8"
