@@ -189,11 +189,13 @@ pub struct GameCoordinator {
     pub starts_first: bool,
     pub opponent_name: Option<String>,
     pub opponent_commit: Option<Digest>,
+    /// Local tracking view of the opponent's board (only grid updated with hits/misses)
+    pub opponent_view: GameState,
 }
 
 impl GameCoordinator {
     pub fn new(local_state: GameState, local_commit: Digest, network: NetworkConnection, player_name: String, starts_first: bool) -> Self {
-        Self { local_state, local_commit, network, player_name, starts_first, opponent_name: None, opponent_commit: None }
+        Self { local_state, local_commit, network, player_name, starts_first, opponent_name: None, opponent_commit: None, opponent_view: GameState::new([0;16]) }
     }
 
     /// Perform handshake: exchange BoardReady messages and record opponent info.
@@ -220,6 +222,8 @@ impl GameCoordinator {
 
         loop {
             if local_turn {
+                // Show boards: local (revealed) and opponent view (hits/misses)
+                display_dual(&self.local_state, &self.opponent_view, true);
                 // Local player's move
                 println!("Your turn. Enter shot as 'x y':");
                 print!("> "); io::stdout().flush().ok();
@@ -248,31 +252,39 @@ impl GameCoordinator {
                                 // Extract the round commits from the receipt
                                 let commits = extract_round_commits(&receipt)?;
                                 let rc = commits.last().unwrap();
-
                                 // As the shooter (we initiated the TakeShot), the opponent
                                 // has applied the shot to their authoritative state and
                                 // provided a proof. We should NOT apply the shot to our
                                 // local_state (that's our own board). Instead, update
                                 // our stored opponent_commit to the new_state from the proof
-                                // so we track their latest commitment.
+                                // so we track their latest commitment and record the
+                                // hit/miss in our local opponent_view for visualization.
                                 self.opponent_commit = Some(rc.new_state);
 
-                                // Update turn according to the hit result relative to the shooter
+                                // Record hit/miss in opponent_view grid for UI
+                                use core::CellState;
+                                let x = position.x as usize;
+                                let y = position.y as usize;
                                 match rc.hit {
                                     HitType::Miss => {
+                                        self.opponent_view.grid[y][x] = CellState::Miss;
                                         println!("Miss (verified). Turn passes to opponent.");
                                         local_turn = false;
                                     }
                                     HitType::Hit => {
+                                        self.opponent_view.grid[y][x] = CellState::Hit;
                                         println!("Hit (verified)! You get another shot.");
                                         // shooter keeps the turn
                                         local_turn = true;
                                     }
                                     HitType::Sunk(st) => {
+                                        self.opponent_view.grid[y][x] = CellState::Hit;
                                         println!("Sunk {:?} (verified). Turn passes.", st);
                                         local_turn = false;
                                     }
                                 }
+                                // Show boards after the result
+                                display_dual(&self.local_state, &self.opponent_view, true);
                             }
                             other => { println!("Unexpected message while waiting for ShotResult: {:?}", other); }
                         }
@@ -298,8 +310,10 @@ impl GameCoordinator {
                             Err(e) => {
                                 let err_msg = format!("prover unavailable: {}", e);
                                 let err = GameMessage::Error { message: err_msg.clone() };
-                                self.network.send_enveloped(&err)?;
-                                anyhow::bail!("prover unavailable: {}", e);
+                                // inform requester but do not abort the game; allow retry
+                                let _ = self.network.send_enveloped(&err);
+                                println!("Prover unavailable: {}. Sent Error to requester.", e);
+                                continue;
                             }
                         };
                         // Extract round commit

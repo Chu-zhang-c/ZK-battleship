@@ -4,7 +4,7 @@ use serde::{Deserialize};
 // Import canonical types from the core crate. `GameState::commit()` and
 // `RoundCommit` are used to produce the public commitments that the
 // verifier will later check.
-use core::{GameState, RoundCommit, Position};
+use core::{GameState, RoundCommit, HitType, Position};
 
 /// Input supplied to the guest prover.
 /// - `initial`: the initial board placement (authoritative GameState)
@@ -41,13 +41,18 @@ fn main() {
         let old_state = state.commit();
 
         // Apply the shot. Per the core API, `apply_shot` returns `None`
-        // for out-of-bounds or already-shot cells. Here we treat such
-        // cases as a proof failure (panic), because the host should not
-        // request invalid actions; adjust this policy as needed for your
-        // protocol (e.g., you could instead emit a special RoundCommit).
+        // for out-of-bounds or already-shot cells. Instead of panicking we
+        // treat such cases as a harmless no-op and record a Miss. This
+        // prevents the guest from aborting the proof when a remote peer
+        // requests an invalid/repeated shot; the host should still reject
+        // repeated shots at the protocol level if desired.
         let hit = match state.apply_shot(shot) {
             Some(h) => h,
-            None => panic!("invalid shot requested in guest: {:?}", shot),
+            None => {
+                // Do not mutate state; represent as a Miss so the proof
+                // remains decidable by the verifier.
+                HitType::Miss
+            }
         };
 
         let new_state = state.commit();

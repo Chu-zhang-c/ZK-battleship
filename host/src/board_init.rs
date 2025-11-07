@@ -59,6 +59,8 @@ pub fn prompt_place_ships(player_name: &str) -> GameState {
                 continue;
             }
             state.place_ship(st, pos, dir);
+            // Show the board after each placement so the player can confirm
+            crate::visualize::display_board(&state, true);
             break;
         }
     }
