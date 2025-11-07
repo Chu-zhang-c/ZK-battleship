@@ -17,7 +17,7 @@ use std::io::{self, Write};
 use crate::board_init::prompt_place_ships;
 use crate::visualize::{display_board, display_dual};
 use core::{GameState, Position, HitType};
-use crate::proofs::{GuestInput, produce_and_verify_proof, extract_round_commits, verify_remote_round_proof};
+use crate::proofs::{GuestInput, produce_and_verify_proof, verify_remote_round_proof};
 
 /// Run the full interactive game implementing the requested turn rules.
 pub fn run_game_master_interactive() {
@@ -76,8 +76,7 @@ pub fn run_game_master_interactive() {
             // Instead of applying the shot directly, produce a per-round proof
             // using the guest and verify the produced RoundCommit matches the
             // server's authoritative application of the shot.
-            let pre_digest = opponent.commit();
-
+            
             let guest_input = GuestInput { initial: opponent.clone(), shots: vec![pos] };
             match produce_and_verify_proof(&guest_input) {
                 Ok(receipt) => {

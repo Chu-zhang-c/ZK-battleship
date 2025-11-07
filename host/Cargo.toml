@@ -5,13 +5,20 @@ edition = "2021"
 
 [dependencies]
 methods = { path = "../methods" }
-risc0-zkvm = { version = "^3.0.3" }
+# Match the risc0 crates used by the workspace (built for host operations)
+# Use risc0 v3 to match the user's installed risc0 toolchain
+risc0-zkvm = "3.0.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 core = { path = "../core", features = ["rand"] }
 bincode = "1.3"
 anyhow = "1.0"
 hex = "0.4"
+# Enable serde support for Uuid so Envelope can be serialized
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 rand = "0.8"
+serde_json = "1.0"
+

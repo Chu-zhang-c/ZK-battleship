@@ -8,6 +8,7 @@ pub mod game_master;
 pub mod proofs;
 pub mod network;
 pub mod network_protocol;
+pub mod game_coordinator;
 
 // Optionally, you can expose helper functions here that combine the above
 // modules into common flows.
