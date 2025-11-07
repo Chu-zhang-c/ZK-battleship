@@ -94,8 +94,12 @@ impl NetworkConnection {
     /// Receive an enveloped message and verify match_id and sequence number.
     pub fn receive_enveloped(&mut self) -> anyhow::Result<crate::network_protocol::Envelope> {
         let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        let env: crate::network_protocol::Envelope = serde_json::from_str(&line).context("failed to parse incoming envelope")?;
+        let n = self.reader.read_line(&mut line)?;
+        if n == 0 {
+            anyhow::bail!("connection closed by peer (EOF)");
+        }
+        let env: crate::network_protocol::Envelope = serde_json::from_str(&line)
+            .with_context(|| format!("failed to parse incoming envelope (raw={:?})", line))?;
 
         // If we don't yet have a match_id, accept the first one seen
         if self.match_id.is_none() {

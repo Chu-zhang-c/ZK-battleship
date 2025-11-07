@@ -245,15 +245,33 @@ impl GameCoordinator {
                             GameMessage::ShotResult { position, hit_type: _, proof } => {
                                 // Reconstruct receipt and verify it locally
                                 let receipt = receipt_from_proofdata(&proof)?;
-                                // Verify the proof and apply it to our authoritative state
+                                // Extract the round commits from the receipt
                                 let commits = extract_round_commits(&receipt)?;
                                 let rc = commits.last().unwrap();
-                                // Apply shot to local_state (we are the opponent here)
-                                let _ = self.local_state.apply_shot(position);
+
+                                // As the shooter (we initiated the TakeShot), the opponent
+                                // has applied the shot to their authoritative state and
+                                // provided a proof. We should NOT apply the shot to our
+                                // local_state (that's our own board). Instead, update
+                                // our stored opponent_commit to the new_state from the proof
+                                // so we track their latest commitment.
+                                self.opponent_commit = Some(rc.new_state);
+
+                                // Update turn according to the hit result relative to the shooter
                                 match rc.hit {
-                                    HitType::Miss => { println!("Opponent reports Miss (verified). You get turn next."); local_turn = true; }
-                                    HitType::Hit => { println!("Opponent reports Hit (verified). They get another shot."); local_turn = false; }
-                                    HitType::Sunk(st) => { println!("Opponent reports Sunk {:?} (verified). Turn passes.", st); local_turn = true; }
+                                    HitType::Miss => {
+                                        println!("Miss (verified). Turn passes to opponent.");
+                                        local_turn = false;
+                                    }
+                                    HitType::Hit => {
+                                        println!("Hit (verified)! You get another shot.");
+                                        // shooter keeps the turn
+                                        local_turn = true;
+                                    }
+                                    HitType::Sunk(st) => {
+                                        println!("Sunk {:?} (verified). Turn passes.", st);
+                                        local_turn = false;
+                                    }
                                 }
                             }
                             other => { println!("Unexpected message while waiting for ShotResult: {:?}", other); }

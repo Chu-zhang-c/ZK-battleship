@@ -6,7 +6,6 @@ use tracing_subscriber;
 use host::game::{run_game_master_interactive, GameCoordinator};
 use host::board_init::prompt_place_ships;
 use host::network::NetworkConnection;
-use core::GameState;
 
 fn main() {
     // Initialize tracing. To see logs run with RUST_LOG=info (or debug).
