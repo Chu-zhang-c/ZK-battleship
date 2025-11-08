@@ -7,10 +7,6 @@ use risc0_zkvm::serde::{Deserializer, Error as SerdeError};
 use serde::Serialize;
 use anyhow::anyhow;
 use risc0_zkvm::sha::Digest;
-use std::fs::{OpenOptions, create_dir_all};
-use std::io::Write;
-use base64::{engine::general_purpose, Engine as _};
-use serde_json;
 
 #[derive(Serialize)]
 pub struct GuestInput {
@@ -175,27 +171,5 @@ pub fn verify_shot_result_for_shooter(receipt: &Receipt, expected_old: Digest, s
         bail!("commit.old_state does not match expected old digest");
     }
 
-    // Persist receipt+commit for audit
-    if let Err(e) = persist_receipt_and_commit(receipt, &commit) {
-        // non-fatal: warn but continue accepting the commit
-        eprintln!("warning: failed to persist receipt: {}", e);
-    }
-
     Ok(commit)
-}
-
-fn persist_receipt_and_commit(receipt: &Receipt, commit: &RoundCommit) -> Result<()> {
-    // Ensure receipts directory
-    create_dir_all("receipts").context("creating receipts dir")?;
-    // filename by match id
-    let filename = format!("receipts/{}.log", commit.match_id);
-    let mut f = OpenOptions::new().create(true).append(true).open(&filename).context("opening receipt log")?;
-
-    // Serialize receipt bytes as base64 and commit as JSON line
-    let receipt_bytes = bincode::serialize(receipt).context("serializing receipt for persistence")?;
-    let receipt_b64 = general_purpose::STANDARD.encode(&receipt_bytes);
-    let commit_json = serde_json::to_string(commit).context("serializing commit to json")?;
-    let line = format!("{{\"seq\":{},\"receipt_b64\":\"{}\",\"commit\":{}}}\n", commit.seq, receipt_b64, commit_json);
-    f.write_all(line.as_bytes()).context("writing receipt log")?;
-    Ok(())
 }

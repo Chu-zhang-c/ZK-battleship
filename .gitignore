@@ -5,3 +5,7 @@ target/
 .env.client
 .env.server
 /certs
+receipts/b83b8f77-1293-422e-a05d-330177a31179.log
+matches/b83b8f77-1293-422e-a05d-330177a31179.seq
+/matches
+/receipts

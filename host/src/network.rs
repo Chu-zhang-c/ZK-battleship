@@ -30,38 +30,6 @@ pub struct NetworkConnection {
 }
 
 impl NetworkConnection {
-    fn matches_dir() -> std::path::PathBuf {
-        std::path::Path::new("matches").to_path_buf()
-    }
-
-    fn last_seq_path(match_id: uuid::Uuid) -> std::path::PathBuf {
-        let mut p = Self::matches_dir();
-        p.push(format!("{}.seq", match_id));
-        p
-    }
-
-    fn load_last_seq_for(&self, match_id: uuid::Uuid) -> anyhow::Result<Option<u64>> {
-        let p = Self::last_seq_path(match_id);
-        if !p.exists() {
-            return Ok(None);
-        }
-        let s = std::fs::read_to_string(&p).context("reading last_seq file")?;
-        let v = s.trim().parse::<u64>().context("parsing last_seq")?;
-        Ok(Some(v))
-    }
-
-    fn persist_expected_seq_for(&self) -> anyhow::Result<()> {
-        if let Some(mid) = self.match_id {
-            let p = Self::last_seq_path(mid);
-            let dir = Self::matches_dir();
-            std::fs::create_dir_all(&dir).context("creating matches dir")?;
-            // write atomically
-            let tmp = p.with_extension("tmp");
-            std::fs::write(&tmp, format!("{}", self.expected_seq)).context("writing tmp seq file")?;
-            std::fs::rename(&tmp, &p).context("renaming seq tmp file")?;
-        }
-        Ok(())
-    }
     fn write_line(&self, s: &str) -> anyhow::Result<()> {
         let mut guard = self.stream.lock().unwrap();
         let writer: &mut dyn Write = &mut **guard;
@@ -293,10 +261,6 @@ impl NetworkConnection {
         // If we don't yet have a match_id, accept the first one seen
         if self.match_id.is_none() {
             self.match_id = Some(env.match_id);
-            // Load persisted expected sequence (if any) for replay protection
-            if let Ok(Some(seq)) = self.load_last_seq_for(env.match_id) {
-                self.expected_seq = seq;
-            }
         }
 
         // Validate match id
@@ -311,11 +275,6 @@ impl NetworkConnection {
             anyhow::bail!("unexpected sequence number: expected {} got {}", self.expected_seq, env.seq);
         }
         self.expected_seq = self.expected_seq.wrapping_add(1);
-        // Persist expected_seq for replay protection across restarts
-        if let Err(e) = self.persist_expected_seq_for() {
-            // non-fatal but log
-            eprintln!("warning: failed to persist expected_seq: {}", e);
-        }
 
         Ok(env)
     }

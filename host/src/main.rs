@@ -9,9 +9,35 @@ use host::network::NetworkConnection;
 
 fn main() {
     // Initialize tracing. To see logs run with RUST_LOG=info (or debug).
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::filter::EnvFilter::from_default_env())
-        .init();
+    // Initialize tracing. By default we silence very-verbose risc0 debug
+    // messages while still allowing users to override via RUST_LOG. We build
+    // a base directive that keeps risc0 crates at INFO and then prepend it to
+    // any user-provided RUST_LOG so the user's settings take precedence.
+    // By default we cap global logging to INFO to avoid noisy risc0 debug
+    // output during normal play. To opt into risc0 debug logs set
+    // ALLOW_RISC0_DEBUG=1 in your environment (or edit this file).
+    if std::env::var("ALLOW_RISC0_DEBUG").is_ok() {
+        // Honor RUST_LOG if the user explicitly allows risc0 debug output.
+        // This lets advanced users control logging (including risc0 crates).
+        let env_filter = tracing_subscriber::filter::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::filter::EnvFilter::new("info"));
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    } else {
+        // By default, keep overall logging at INFO but completely silence
+        // risc0-related crates (set to OFF) even if the user has RUST_LOG set.
+        // This ensures the noisy internal verification logs are hidden from
+        // players unless they explicitly opt in via ALLOW_RISC0_DEBUG.
+        let user_rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+        // Append our risc0 overrides last so they win over any user-provided
+        // directives for those crates. OFF completely disables logging.
+        let risc0_overrides = "risc0_zkvm=off,risc0_zkp=off,risc0_circuit_rv32im=off,risc0_circuit=off";
+        let directives = format!("{},{}", user_rust_log, risc0_overrides);
+        let env_filter = tracing_subscriber::filter::EnvFilter::new(directives);
+        // Also set the `log` crate max level to INFO so libraries emitting
+        // via the `log` facade don't bypass our filter.
+        log::set_max_level(log::LevelFilter::Info);
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    }
 
     println!("=== ZK Battleship Host ===");
 
