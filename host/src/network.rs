@@ -18,7 +18,6 @@ use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod, SslConnector};
 use ring::agreement::{EphemeralPrivateKey, agree_ephemeral, X25519, UnparsedPublicKey};
 use ring::rand::SystemRandom;
 use ring::digest;
-use tracing::debug;
 
 pub struct NetworkConnection {
     /// TLS-wrapped stream (boxed to erase concrete stream type)
@@ -31,6 +30,38 @@ pub struct NetworkConnection {
 }
 
 impl NetworkConnection {
+    fn matches_dir() -> std::path::PathBuf {
+        std::path::Path::new("matches").to_path_buf()
+    }
+
+    fn last_seq_path(match_id: uuid::Uuid) -> std::path::PathBuf {
+        let mut p = Self::matches_dir();
+        p.push(format!("{}.seq", match_id));
+        p
+    }
+
+    fn load_last_seq_for(&self, match_id: uuid::Uuid) -> anyhow::Result<Option<u64>> {
+        let p = Self::last_seq_path(match_id);
+        if !p.exists() {
+            return Ok(None);
+        }
+        let s = std::fs::read_to_string(&p).context("reading last_seq file")?;
+        let v = s.trim().parse::<u64>().context("parsing last_seq")?;
+        Ok(Some(v))
+    }
+
+    fn persist_expected_seq_for(&self) -> anyhow::Result<()> {
+        if let Some(mid) = self.match_id {
+            let p = Self::last_seq_path(mid);
+            let dir = Self::matches_dir();
+            std::fs::create_dir_all(&dir).context("creating matches dir")?;
+            // write atomically
+            let tmp = p.with_extension("tmp");
+            std::fs::write(&tmp, format!("{}", self.expected_seq)).context("writing tmp seq file")?;
+            std::fs::rename(&tmp, &p).context("renaming seq tmp file")?;
+        }
+        Ok(())
+    }
     fn write_line(&self, s: &str) -> anyhow::Result<()> {
         let mut guard = self.stream.lock().unwrap();
         let writer: &mut dyn Write = &mut **guard;
@@ -82,8 +113,6 @@ impl NetworkConnection {
     let my_private = EphemeralPrivateKey::generate(&X25519, &rng).map_err(|e| anyhow::anyhow!("generating ephemeral key: {:?}", e))?;
     let my_pub = my_private.compute_public_key().map_err(|e| anyhow::anyhow!("compute public key failed: {:?}", e))?;
     let pub_b64 = general_purpose::STANDARD.encode(my_pub.as_ref());
-    // Debug: log our DH public key (base64) so we can inspect handshake during debugging
-    debug!("DH pub (local) = {}", pub_b64);
 
         if initiator {
             let req = serde_json::to_string(&serde_json::json!({"dh_pub": pub_b64}))?;
@@ -94,16 +123,13 @@ impl NetworkConnection {
             reader.read_line(&mut line)?;
             let v: serde_json::Value = serde_json::from_str(&line)?;
             let peer_b64 = v.get("dh_pub").and_then(|x| x.as_str()).ok_or_else(|| anyhow::anyhow!("missing dh_pub"))?;
-            debug!("DH pub (peer) = {}", peer_b64);
             let peer_bytes = general_purpose::STANDARD.decode(peer_b64)?;
             let peer_pub = UnparsedPublicKey::new(&X25519, peer_bytes);
             let shared = agree_ephemeral(my_private, &peer_pub, |shared| {
                 let d = digest::digest(&digest::SHA256, shared);
                 d.as_ref().to_vec()
             }).map_err(|e| anyhow::anyhow!("agree_ephemeral failed: {:?}", e))?;
-            // Debug: log a short fingerprint of the derived secret (don't log the whole secret)
-            let fp: String = shared.iter().take(8).map(|b| format!("{:02x}", b)).collect();
-            debug!("Derived match secret fp={}", fp);
+            // Derive secret fingerprint for internal use (not logged)
             return Ok(shared);
         } else {
             let mut reader = BufReader::new(&mut *stream);
@@ -111,7 +137,6 @@ impl NetworkConnection {
             reader.read_line(&mut line)?;
             let v: serde_json::Value = serde_json::from_str(&line)?;
             let peer_b64 = v.get("dh_pub").and_then(|x| x.as_str()).ok_or_else(|| anyhow::anyhow!("missing dh_pub"))?;
-            debug!("DH pub (peer) = {}", peer_b64);
             let peer_bytes = general_purpose::STANDARD.decode(peer_b64)?;
             let req = serde_json::to_string(&serde_json::json!({"dh_pub": pub_b64}))?;
             writeln!(stream, "{}", req)?;
@@ -121,8 +146,7 @@ impl NetworkConnection {
                 let d = digest::digest(&digest::SHA256, shared);
                 d.as_ref().to_vec()
             }).map_err(|e| anyhow::anyhow!("agree_ephemeral failed: {:?}", e))?;
-            let fp: String = shared.iter().take(8).map(|b| format!("{:02x}", b)).collect();
-            debug!("Derived match secret fp={}", fp);
+            // Derive secret fingerprint for internal use (not logged)
             return Ok(shared);
         }
     }
@@ -149,8 +173,10 @@ impl NetworkConnection {
         let mut tls_stream = acceptor.accept(tcp_stream).context("accepting ssl")?;
         // After TLS handshake completes, perform X25519 DH over the encrypted channel to derive match_secret
         let secret = Self::perform_tls_handshake_and_dh(&mut tls_stream, false)?;
-    let boxed: Box<dyn ReadWrite + Send> = Box::new(tls_stream);
-    Ok(Self { stream: Arc::new(Mutex::new(boxed)), match_id: None, next_seq: 0, expected_seq: 0, match_secret: Some(secret) })
+        let boxed: Box<dyn ReadWrite + Send> = Box::new(tls_stream);
+        let mut nc = Self { stream: Arc::new(Mutex::new(boxed)), match_id: None, next_seq: 0, expected_seq: 0, match_secret: Some(secret) };
+        // No persisted match id yet; return connection
+        Ok(nc)
     }
 
     /// Client: Connect to a host
@@ -172,8 +198,9 @@ impl NetworkConnection {
         let mut tls_stream = connector.connect(host, tcp).context("connecting ssl")?;
         // DH exchange (client initiates)
         let secret = Self::perform_tls_handshake_and_dh(&mut tls_stream, true)?;
-    let boxed: Box<dyn ReadWrite + Send> = Box::new(tls_stream);
-    Ok(Self { stream: Arc::new(Mutex::new(boxed)), match_id: None, next_seq: 0, expected_seq: 0, match_secret: Some(secret) })
+        let boxed: Box<dyn ReadWrite + Send> = Box::new(tls_stream);
+        let nc = Self { stream: Arc::new(Mutex::new(boxed)), match_id: None, next_seq: 0, expected_seq: 0, match_secret: Some(secret) };
+        Ok(nc)
     }
 
     /// Host-side handshake: generate match_id, send our BoardReady, then
@@ -230,8 +257,7 @@ impl NetworkConnection {
             mac.update(json_no_auth.as_bytes());
             let result = mac.finalize().into_bytes();
             let token = general_purpose::STANDARD.encode(&result);
-            // Debug: log the HMAC token and the JSON used to compute it (shorten JSON in logs)
-            debug!("send_enveloped hmac={} json_prefix={}", token, &json_no_auth.chars().take(120).collect::<String>());
+            // no debug logging in production
             env.auth_token = Some(token);
         }
         let json = serde_json::to_string(&env)?;
@@ -258,8 +284,7 @@ impl NetworkConnection {
             mac.update(json_no_auth.as_bytes());
             let expected = mac.finalize().into_bytes();
             let expected_b64 = general_purpose::STANDARD.encode(&expected);
-            // Debug: log expected and received tokens for diagnosis
-            debug!("recv_enveloped expected_hmac={} received_hmac={:?} json_prefix={}", expected_b64, token, &json_no_auth.chars().take(120).collect::<String>());
+            // no debug logging in production
             if token.is_none() || token.unwrap() != expected_b64 {
                 anyhow::bail!("auth token missing or invalid");
             }
@@ -268,6 +293,10 @@ impl NetworkConnection {
         // If we don't yet have a match_id, accept the first one seen
         if self.match_id.is_none() {
             self.match_id = Some(env.match_id);
+            // Load persisted expected sequence (if any) for replay protection
+            if let Ok(Some(seq)) = self.load_last_seq_for(env.match_id) {
+                self.expected_seq = seq;
+            }
         }
 
         // Validate match id
@@ -282,6 +311,11 @@ impl NetworkConnection {
             anyhow::bail!("unexpected sequence number: expected {} got {}", self.expected_seq, env.seq);
         }
         self.expected_seq = self.expected_seq.wrapping_add(1);
+        // Persist expected_seq for replay protection across restarts
+        if let Err(e) = self.persist_expected_seq_for() {
+            // non-fatal but log
+            eprintln!("warning: failed to persist expected_seq: {}", e);
+        }
 
         Ok(env)
     }

@@ -9,7 +9,7 @@ use core::{GameState, Position, HitType, CellState};
 use risc0_zkvm::sha::Digest;
 use crate::network::NetworkConnection;
 use crate::network_protocol::GameMessage;
-use crate::proofs::{GuestInput, produce_and_verify_proof, extract_round_commits, proofdata_from_receipt, receipt_from_proofdata, verify_remote_round_proof};
+use crate::proofs::{GuestInput, produce_and_verify_proof, extract_round_commits, proofdata_from_receipt, receipt_from_proofdata, verify_remote_round_proof, verify_shot_result_for_shooter};
 
 /// Run the full interactive game implementing the requested turn rules.
 pub fn run_game_master_interactive() {
@@ -379,22 +379,35 @@ impl GameCoordinator {
                     GameMessage::ShotResult { position, hit_type: _, proof } => {
                         // Received a ShotResult for a shot we previously made
                         let receipt = receipt_from_proofdata(&proof)?;
-                        // Verify remote proof and ensure it matches our expected state for opponent
-                        // In P2P we don't hold full opponent GameState, so we accept their proof after verifying cryptographically.
-                        // However, ensure the proof is bound to the current match and sequence to prevent replay.
-                        let commits = extract_round_commits(&receipt)?;
-                        let rc = commits.last().unwrap();
-                        if !commits.iter().any(|c| c.match_id == env.match_id && c.seq == env.seq) {
-                            println!("Received proof not bound to current match/seq. Rejecting.");
-                            continue;
+                        // We must have a stored opponent_commit (old digest) to validate against
+                        let expected_old = match self.opponent_commit {
+                            Some(d) => d,
+                            None => {
+                                println!("No stored opponent commit - cannot verify incoming ShotResult. Rejecting.");
+                                continue;
+                            }
+                        };
+
+                        // Verify receipt, binding, and that commit.old_state == our stored opponent_commit
+                        let rc = match verify_shot_result_for_shooter(&receipt, expected_old, position, Some(env.match_id), Some(env.seq)) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                println!("Failed to verify incoming ShotResult: {}. Rejecting.", e);
+                                continue;
+                            }
+                        };
+
+                        // Adopt the new opponent commitment and record hit/miss for UI
+                        self.opponent_commit = Some(rc.new_state);
+                        use core::CellState;
+                        let x = position.x as usize;
+                        let y = position.y as usize;
+                        match rc.hit {
+                            HitType::Miss => { self.opponent_view.grid[y][x] = CellState::Miss; println!("Miss (verified). Turn passes to opponent."); local_turn = true; }
+                            HitType::Hit => { self.opponent_view.grid[y][x] = CellState::Hit; println!("Hit (verified)! You get another shot."); local_turn = false; }
+                            HitType::Sunk(st) => { self.opponent_view.grid[y][x] = CellState::Hit; println!("Sunk {:?} (verified). Turn passes.", st); local_turn = true; }
                         }
-                        println!("Received ShotResult at {:?}: {:?}", position, rc.hit);
-                        // Update turn based on hit
-                        match &rc.hit {
-                            HitType::Miss => { local_turn = false; }
-                            HitType::Hit => { local_turn = true; }
-                            HitType::Sunk(_) => { local_turn = false; }
-                        }
+                        display_dual(&self.local_state, &self.opponent_view, true);
                     }
                     GameMessage::BoardReady { .. } => {
                         // ignore here
