@@ -5,6 +5,7 @@ use serde::{Deserialize};
 // `RoundCommit` are used to produce the public commitments that the
 // verifier will later check.
 use core::{GameState, RoundCommit, HitType, Position};
+use uuid::Uuid;
 
 /// Input supplied to the guest prover.
 /// - `initial`: the initial board placement (authoritative GameState)
@@ -14,6 +15,8 @@ use core::{GameState, RoundCommit, HitType, Position};
 struct GuestInput {
     initial: GameState,
     shots: Vec<Position>,
+    match_id: Uuid,
+    seq: u64,
 }
 
 fn main() {
@@ -36,7 +39,9 @@ fn main() {
     env::commit(&initial_commit);
 
     // For each shot, record the old/new state commits and the hit result
-    // in a `RoundCommit` which is written to the journal.
+    // in a `RoundCommit` which is written to the journal. The round commit
+    // is bound to the provided match/session id and sequence number so the
+    // verifier can tie proofs to network-level associated data.
     for shot in input.shots {
         let old_state = state.commit();
 
@@ -57,7 +62,7 @@ fn main() {
 
         let new_state = state.commit();
 
-        let round = RoundCommit { old_state, new_state, shot, hit };
+        let round = RoundCommit { match_id: input.match_id, seq: input.seq, old_state, new_state, shot, hit };
         env::commit(&round);
     }
 }

@@ -80,11 +80,10 @@ pub fn run_game_master_interactive() {
             // using the guest and verify the produced RoundCommit matches the
             // server's authoritative application of the shot.
 
-            let guest_input = GuestInput { initial: opponent.clone(), shots: vec![pos] };
-            match produce_and_verify_proof(&guest_input) {
+                match produce_and_verify_proof(&GuestInput { initial: opponent.clone(), shots: vec![pos], match_id: uuid::Uuid::nil(), seq: 0 }) {
                 Ok(receipt) => {
                     // Verify and validate the round's commit against authoritative state
-                    match verify_remote_round_proof(&receipt, opponent, pos) {
+                        match verify_remote_round_proof(&receipt, opponent, pos, None, None) {
                         Ok(commits) => {
                             // commits last element corresponds to the shot result we just proved
                             let rc = commits.last().unwrap();
@@ -270,43 +269,37 @@ impl GameCoordinator {
                         let env = self.network.receive_enveloped()?;
                         match env.payload {
                             GameMessage::ShotResult { position, hit_type: _, proof } => {
-                                // Reconstruct receipt and verify it locally
+                                // Reconstruct receipt
                                 let receipt = receipt_from_proofdata(&proof)?;
-                                // Extract the round commits from the receipt
-                                let commits = extract_round_commits(&receipt)?;
-                                let rc = commits.last().unwrap();
-                                // As the shooter (we initiated the TakeShot), the opponent
-                                // has applied the shot to their authoritative state and
-                                // provided a proof. We should NOT apply the shot to our
-                                // local_state (that's our own board). Instead, update
-                                // our stored opponent_commit to the new_state from the proof
-                                // so we track their latest commitment and record the
-                                // hit/miss in our local opponent_view for visualization.
-                                self.opponent_commit = Some(rc.new_state);
+                                // We must have a stored opponent_commit (old digest) to validate against
+                                let expected_old = match self.opponent_commit {
+                                    Some(d) => d,
+                                    None => {
+                                        println!("No stored opponent commit - cannot verify incoming ShotResult. Rejecting.");
+                                        continue;
+                                    }
+                                };
 
-                                // Record hit/miss in opponent_view grid for UI
+                                // Verify receipt and binding: ensure the proof contains a commit bound to the
+                                // current match_id/seq and that commit.old_state == our stored opponent_commit.
+                                let rc = match crate::proofs::verify_shot_result_for_shooter(&receipt, expected_old, position, Some(env.match_id), Some(env.seq)) {
+                                    Ok(c) => c,
+                                    Err(e) => {
+                                        println!("Failed to verify incoming ShotResult: {}. Rejecting.", e);
+                                        continue;
+                                    }
+                                };
+
+                                // Adopt the new opponent commitment and record hit/miss for UI
+                                self.opponent_commit = Some(rc.new_state);
                                 use core::CellState;
                                 let x = position.x as usize;
                                 let y = position.y as usize;
                                 match rc.hit {
-                                    HitType::Miss => {
-                                        self.opponent_view.grid[y][x] = CellState::Miss;
-                                        println!("Miss (verified). Turn passes to opponent.");
-                                        local_turn = false;
-                                    }
-                                    HitType::Hit => {
-                                        self.opponent_view.grid[y][x] = CellState::Hit;
-                                        println!("Hit (verified)! You get another shot.");
-                                        // shooter keeps the turn
-                                        local_turn = true;
-                                    }
-                                    HitType::Sunk(st) => {
-                                        self.opponent_view.grid[y][x] = CellState::Hit;
-                                        println!("Sunk {:?} (verified). Turn passes.", st);
-                                        local_turn = false;
-                                    }
+                                    HitType::Miss => { self.opponent_view.grid[y][x] = CellState::Miss; println!("Miss (verified). Turn passes to opponent."); local_turn = false; }
+                                    HitType::Hit => { self.opponent_view.grid[y][x] = CellState::Hit; println!("Hit (verified)! You get another shot."); local_turn = true; }
+                                    HitType::Sunk(st) => { self.opponent_view.grid[y][x] = CellState::Hit; println!("Sunk {:?} (verified). Turn passes.", st); local_turn = false; }
                                 }
-                                // Show boards after the result
                                 display_dual(&self.local_state, &self.opponent_view, true);
                             }
                             other => { println!("Unexpected message while waiting for ShotResult: {:?}", other); }
@@ -336,7 +329,7 @@ impl GameCoordinator {
                             continue;
                         }
 
-                        let input = crate::proofs::GuestInput { initial: self.local_state.clone(), shots: vec![position] };
+                        let input = crate::proofs::GuestInput { initial: self.local_state.clone(), shots: vec![position], match_id: env.match_id, seq: env.seq };
                         // Try to produce the per-shot proof locally. If the prover is
                         // not available the function will return an error; in that
                         // case send an Error message back to the requester so the
@@ -387,9 +380,14 @@ impl GameCoordinator {
                         // Received a ShotResult for a shot we previously made
                         let receipt = receipt_from_proofdata(&proof)?;
                         // Verify remote proof and ensure it matches our expected state for opponent
-                        // In P2P we don't hold full opponent GameState, so we accept their proof after verifying cryptographically
+                        // In P2P we don't hold full opponent GameState, so we accept their proof after verifying cryptographically.
+                        // However, ensure the proof is bound to the current match and sequence to prevent replay.
                         let commits = extract_round_commits(&receipt)?;
                         let rc = commits.last().unwrap();
+                        if !commits.iter().any(|c| c.match_id == env.match_id && c.seq == env.seq) {
+                            println!("Received proof not bound to current match/seq. Rejecting.");
+                            continue;
+                        }
                         println!("Received ShotResult at {:?}: {:?}", position, rc.hit);
                         // Update turn based on hit
                         match &rc.hit {

@@ -17,7 +17,7 @@ fn prover_and_network_smoke() -> Result<()> {
     state.place_ship(ShipType::Submarine, Position::new(0,6), Direction::Horizontal);
     state.place_ship(ShipType::Destroyer, Position::new(0,8), Direction::Horizontal);
 
-    let guest_input = GuestInput { initial: state.clone(), shots: vec![Position::new(0,0)] };
+    let guest_input = GuestInput { initial: state.clone(), shots: vec![Position::new(0,0)], match_id: uuid::Uuid::nil(), seq: 0 };
 
     // Try to produce & verify a proof. If the prover is unavailable, skip.
     let receipt = match produce_and_verify_proof(&guest_input) {
@@ -45,7 +45,7 @@ fn prover_and_network_smoke() -> Result<()> {
     let rec2 = receipt_from_proofdata(&pd_back)?;
     let commits2 = extract_round_commits(&rec2)?;
     assert_eq!(commits, commits2);
-    let _verified_commits = verify_remote_round_proof(&rec2, &state, Position::new(0,0))?;
+    let _verified_commits = verify_remote_round_proof(&rec2, &state, Position::new(0,0), None, None)?;
 
     Ok(())
 }

@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 use risc0_zkvm::sha::Digest;
 use risc0_zkvm::sha::Sha256;
+use uuid::Uuid;
 
 #[cfg(feature = "rand")]
 use {
@@ -199,6 +200,11 @@ pub enum HitType {
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RoundCommit {
+    /// Bind the round commit to a match/session id so proofs cannot be replayed
+    /// across different matches.
+    pub match_id: Uuid,
+    /// Sequence number for the shot within the match/session.
+    pub seq: u64,
     pub old_state: Digest,
     pub new_state: Digest,
     pub shot: Position,

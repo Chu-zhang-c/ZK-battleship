@@ -9,6 +9,7 @@ methods = { path = "../methods" }
 # Use risc0 v3 to match the user's installed risc0 toolchain
 risc0-zkvm = "3.0.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 core = { path = "../core", features = ["rand"] }
@@ -17,6 +18,11 @@ anyhow = "1.0"
 hex = "0.4"
 # Enable serde support for Uuid so Envelope can be serialized
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.21"
+openssl = "0.10"
+ring = "0.17"
 
 [dev-dependencies]
 rand = "0.8"

@@ -1,15 +1,23 @@
 use anyhow::{Context, Result, bail};
 use core::{GameState, Position, RoundCommit};
+use uuid::Uuid;
 use methods::{METHOD_ELF, METHOD_ID};
 use risc0_zkvm::{default_prover, ExecutorEnv, Receipt};
 use risc0_zkvm::serde::{Deserializer, Error as SerdeError};
 use serde::Serialize;
 use anyhow::anyhow;
+use risc0_zkvm::sha::Digest;
+use std::fs::{OpenOptions, create_dir_all};
+use std::io::Write;
+use base64::{engine::general_purpose, Engine as _};
+use serde_json;
 
 #[derive(Serialize)]
 pub struct GuestInput {
     pub initial: GameState,
     pub shots: Vec<Position>,
+    pub match_id: Uuid,
+    pub seq: u64,
 }
 
 /// NOTE: In this development environment the riscv guest prover APIs and
@@ -78,7 +86,11 @@ pub fn extract_round_commits(receipt: &Receipt) -> Result<Vec<RoundCommit>> {
     Ok(commits)
 }
 
-pub fn verify_remote_round_proof(receipt: &Receipt, server_state: &GameState, shot: Position) -> Result<Vec<RoundCommit>> {
+/// Verify cryptographic integrity of a remote round proof and ensure it is
+/// bound to the provided optional match/session id and sequence number.
+/// If `expected_match` or `expected_seq` are None, those checks are skipped
+/// (useful for local single-process proofs/tests).
+pub fn verify_remote_round_proof(receipt: &Receipt, server_state: &GameState, shot: Position, expected_match: Option<Uuid>, expected_seq: Option<u64>) -> Result<Vec<RoundCommit>> {
     // Verify cryptographic integrity and extract commits
     receipt.verify(METHOD_ID).context("receipt verification failed")?;
     let commits = extract_round_commits(receipt)?;
@@ -98,6 +110,16 @@ pub fn verify_remote_round_proof(receipt: &Receipt, server_state: &GameState, sh
         bail!("receipt does not contain a commit for the requested shot")
     }
 
+    // If match/session binding was requested, ensure at least one commit
+    // in the proof carries the expected match id and sequence number.
+    if let Some(exp_mid) = expected_match {
+        if let Some(exp_seq) = expected_seq {
+            if !commits.iter().any(|c| c.match_id == exp_mid && c.seq == exp_seq) {
+                bail!("receipt proof not bound to expected match_id/seq");
+            }
+        }
+    }
+
     Ok(commits)
 }
 
@@ -109,4 +131,71 @@ pub fn proofdata_from_receipt(receipt: &Receipt, commit: RoundCommit) -> Result<
 pub fn receipt_from_proofdata(pd: &crate::network_protocol::ProofData) -> Result<Receipt> {
     let receipt: Receipt = bincode::deserialize(&pd.receipt_bytes).context("deserializing Receipt from bytes")?;
     Ok(receipt)
+}
+
+/// Verify a receipt for a shooter (who does not hold the defender's full
+/// GameState). This verifies the receipt cryptographically, extracts the
+/// round commits, finds the commit bound to the provided match/seq and
+/// shot, ensures the commit.old_state equals `expected_old`, and returns
+/// the matching RoundCommit (which contains the new_state the shooter can
+/// adopt as the opponent's updated commitment).
+pub fn verify_shot_result_for_shooter(receipt: &Receipt, expected_old: Digest, shot: Position, expected_match: Option<Uuid>, expected_seq: Option<u64>) -> Result<RoundCommit> {
+    // 1) cryptographic verification
+    receipt.verify(METHOD_ID).context("receipt verification failed")?;
+
+    // 2) extract commits
+    let commits = extract_round_commits(receipt)?;
+    if commits.is_empty() {
+        bail!("no round commits found in receipt");
+    }
+
+    // 3) locate commit matching shot and optional binding
+    let mut found: Option<RoundCommit> = None;
+    for c in commits.iter() {
+        if c.shot == shot {
+            if let (Some(mid), Some(sq)) = (expected_match, expected_seq) {
+                if c.match_id == mid && c.seq == sq {
+                    found = Some(c.clone());
+                    break;
+                }
+            } else {
+                found = Some(c.clone());
+                break;
+            }
+        }
+    }
+
+    let commit = match found {
+        Some(c) => c,
+        None => bail!("no matching RoundCommit found for shot/match/seq"),
+    };
+
+    // 4) ensure old_state matches expected_old (the shooter's recorded opponent commit)
+    if commit.old_state != expected_old {
+        bail!("commit.old_state does not match expected old digest");
+    }
+
+    // Persist receipt+commit for audit
+    if let Err(e) = persist_receipt_and_commit(receipt, &commit) {
+        // non-fatal: warn but continue accepting the commit
+        eprintln!("warning: failed to persist receipt: {}", e);
+    }
+
+    Ok(commit)
+}
+
+fn persist_receipt_and_commit(receipt: &Receipt, commit: &RoundCommit) -> Result<()> {
+    // Ensure receipts directory
+    create_dir_all("receipts").context("creating receipts dir")?;
+    // filename by match id
+    let filename = format!("receipts/{}.log", commit.match_id);
+    let mut f = OpenOptions::new().create(true).append(true).open(&filename).context("opening receipt log")?;
+
+    // Serialize receipt bytes as base64 and commit as JSON line
+    let receipt_bytes = bincode::serialize(receipt).context("serializing receipt for persistence")?;
+    let receipt_b64 = general_purpose::STANDARD.encode(&receipt_bytes);
+    let commit_json = serde_json::to_string(commit).context("serializing commit to json")?;
+    let line = format!("{{\"seq\":{},\"receipt_b64\":\"{}\",\"commit\":{}}}\n", commit.seq, receipt_b64, commit_json);
+    f.write_all(line.as_bytes()).context("writing receipt log")?;
+    Ok(())
 }
