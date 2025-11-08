@@ -10,6 +10,7 @@
 //    let board = board_init::prompt_place_ships("Player 1");
 //
 use std::io::{self, Write};
+use rand::thread_rng;
 
 // Use the canonical `core` crate types so host code and guest code share the
 // same definitions and behavior.
@@ -25,6 +26,38 @@ pub fn prompt_place_ships(player_name: &str) -> GameState {
     let mut state = GameState::new([0u8; 16]);
     println!("{}: place your ships on a {}x{} board.", player_name, BOARD_SIZE, BOARD_SIZE);
     println!("Coordinates are 0-based: x in [0..{}], y in [0..{}].", BOARD_SIZE-1, BOARD_SIZE-1);
+
+    // Show the (empty) board initially so the player gets orientation
+    println!("Current board (your ships will be shown as they are placed):");
+    crate::visualize::display_board(&state, true);
+
+    // Ask whether to place manually or randomly
+    loop {
+        print!("Choose placement mode: (M)anual or (R)andom?: ");
+        io::stdout().flush().ok();
+        let mut choice = String::new();
+        if io::stdin().read_line(&mut choice).is_err() {
+            println!("Failed to read input, try again.");
+            continue;
+        }
+        let choice = choice.trim().to_uppercase();
+        if choice == "R" || choice == "RANDOM" {
+            let mut rng = thread_rng();
+            if state.place_ships_randomly(&mut rng) {
+                println!("Random placement complete:");
+                crate::visualize::display_board(&state, true);
+                return state;
+            } else {
+                println!("Random placement failed; falling back to manual placement.");
+                break; // fall through to manual placement loop
+            }
+        } else if choice == "M" || choice == "MANUAL" {
+            break; // proceed to manual placement
+        } else {
+            println!("Please enter 'M' for manual or 'R' for random.");
+            continue;
+        }
+    }
 
     for &st in [ShipType::Carrier, ShipType::Battleship, ShipType::Cruiser, ShipType::Submarine, ShipType::Destroyer].iter() {
         loop {

@@ -42,7 +42,7 @@ fn main() {
                 let commit = state.commit();
 
                 match NetworkConnection::host(port) {
-                    Ok(mut net) => {
+                    Ok(net) => {
                         let mut coord = GameCoordinator::new(state, commit, net, name.clone(), true);
                         if let Err(e) = coord.handshake() {
                             eprintln!("Handshake failed: {}", e);
@@ -74,7 +74,7 @@ fn main() {
                 let commit = state.commit();
 
                 match NetworkConnection::connect(&host, port) {
-                    Ok(mut net) => {
+                    Ok(net) => {
                         let mut coord = GameCoordinator::new(state, commit, net, name.clone(), false);
                         if let Err(e) = coord.handshake() {
                             eprintln!("Handshake failed: {}", e);

@@ -16,6 +16,8 @@ core = { path = "../core", features = ["rand"] }
 bincode = "1.3"
 anyhow = "1.0"
 hex = "0.4"
+# random placement support for interactive host
+rand = "0.8"
 # Enable serde support for Uuid so Envelope can be serialized
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
 hmac = "0.12"

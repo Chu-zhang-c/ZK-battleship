@@ -221,7 +221,7 @@ impl GameCoordinator {
             self.opponent_name = Some(host_name);
             self.opponent_commit = Some(host_commit);
         }
-        println!("Handshake complete with opponent: {:?}", self.opponent_name);
+    println!("Handshake complete with opponent: {}", self.opponent_name.as_deref().unwrap_or("Unknown"));
         Ok(())
     }
 

@@ -174,7 +174,7 @@ impl NetworkConnection {
         // After TLS handshake completes, perform X25519 DH over the encrypted channel to derive match_secret
         let secret = Self::perform_tls_handshake_and_dh(&mut tls_stream, false)?;
         let boxed: Box<dyn ReadWrite + Send> = Box::new(tls_stream);
-        let mut nc = Self { stream: Arc::new(Mutex::new(boxed)), match_id: None, next_seq: 0, expected_seq: 0, match_secret: Some(secret) };
+    let nc = Self { stream: Arc::new(Mutex::new(boxed)), match_id: None, next_seq: 0, expected_seq: 0, match_secret: Some(secret) };
         // No persisted match id yet; return connection
         Ok(nc)
     }
@@ -206,7 +206,7 @@ impl NetworkConnection {
     /// Host-side handshake: generate match_id, send our BoardReady, then
     /// receive opponent's BoardReady. Returns (opponent_name, opponent_commit, opponent_proof)
     pub fn handshake_as_host(&mut self, player_name: &str, commitment: risc0_zkvm::sha::Digest, proof: Option<crate::network_protocol::ProofData>) -> anyhow::Result<(String, risc0_zkvm::sha::Digest, Option<crate::network_protocol::ProofData>)> {
-        use crate::network_protocol::{GameMessage, Envelope};
+        use crate::network_protocol::GameMessage;
         let match_id = uuid::Uuid::new_v4();
         self.match_id = Some(match_id);
 
@@ -225,7 +225,7 @@ impl NetworkConnection {
 
     /// Client-side handshake: receive host's BoardReady to set match_id, then send ours.
     pub fn handshake_as_client(&mut self, player_name: &str, commitment: risc0_zkvm::sha::Digest, proof: Option<crate::network_protocol::ProofData>) -> anyhow::Result<(String, risc0_zkvm::sha::Digest, Option<crate::network_protocol::ProofData>)> {
-        use crate::network_protocol::{GameMessage, Envelope};
+        use crate::network_protocol::GameMessage;
         // Receive host's initial BoardReady
         let env = self.receive_enveloped()?;
         if let crate::network_protocol::GameMessage::BoardReady { commitment: host_commit, player_name: host_name, proof: host_proof } = env.payload {
