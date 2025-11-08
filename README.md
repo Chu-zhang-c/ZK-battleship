@@ -89,13 +89,13 @@ To enable verbose debugging temporarily, edit `host/src/main.rs` and adjust the 
 | ZK Integrity | RISC0 receipt verification | Ensures board transition correctness |
 
 ## Environment Summary
-| Variable | Role | Required (Host) | Required (Client) |
-|----------|------|-----------------|-------------------|
-| BATTLE_SERVER_CERT | Server TLS certificate | Yes | No |
-| BATTLE_SERVER_KEY  | Server TLS private key | Yes | No |
-| BATTLE_CA_CERT     | CA cert to validate peer | Optional* | Yes |
-| BATTLE_CLIENT_CERT | Client TLS cert (mTLS)    | Only if using client auth | Optional (if host requires) |
-| BATTLE_CLIENT_KEY  | Client TLS key (mTLS)     | Only if using client auth | Optional (if host requires) |
+| Variable           | Role                    | Required (Host)           | Required (Client) |
+|--------------------|-------------------------|---------------------------|-------------------|
+| BATTLE_SERVER_CERT | Server TLS certificate  | Yes                       | No                |
+| BATTLE_SERVER_KEY  | Server TLS private key  | Yes                       | No                |
+| BATTLE_CA_CERT     | CA cert to validate peer| Optional*                 | Yes               |
+| BATTLE_CLIENT_CERT | Client TLS cert (mTLS)  | Only if using client auth | Optional (if host requires) |
+| BATTLE_CLIENT_KEY  | Client TLS key (mTLS)   | Only if using client auth | Optional (if host requires) |
 
 * If omitted on host, client certs are not enforced.
 
